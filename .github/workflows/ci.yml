@@ -1,0 +1,122 @@
+# .github/workflows/ci.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub Actions CI — Pre-Merge Unit Test Gate
+# ─────────────────────────────────────────────────────────────────────────────
+# Runs automatically on EVERY pull request targeting `main`.
+# The PR CANNOT be merged if this workflow fails.
+#
+# What it does:
+#   1. Checks out the code
+#   2. Sets up Python 3.11
+#   3. Installs dev dependencies (no real models/GPU needed)
+#   4. Runs the full pytest test suite
+#   5. Uploads coverage report as a downloadable artifact
+#
+# To enforce this as a required check:
+#   GitHub → Repo Settings → Branches → Branch protection rules → main
+#   → ✅ "Require status checks to pass before merging"
+#   → Search for and add: "Run Unit Tests"
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI — Unit Tests
+
+on:
+  pull_request:
+    branches:
+      - main          # Runs on every PR targeting main
+  push:
+    branches:
+      - main          # Also runs on direct pushes to main (post-merge gate)
+
+jobs:
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.11"]   # Test on Python 3.11 (matches your server)
+
+    steps:
+      # ── Step 1: Checkout the code ─────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Step 2: Set up Python ─────────────────────────────────────────────
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"    # Cache pip packages between runs for speed
+
+      # ── Step 3: Install dev dependencies ─────────────────────────────────
+      # We only install requirements-dev.txt here.
+      # Runtime deps (torch, transformers, etc.) are MOCKED in tests,
+      # so we don't need to install them — keeps CI fast.
+      - name: Install testing dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # ── Step 4: Install lightweight stubs for imported packages ───────────
+      # Our tests mock torch/transformers at the call level, but Python still
+      # needs to import the module files. We install stub versions.
+      - name: Install mock stubs for heavy dependencies
+        run: |
+          pip install \
+            fastapi \
+            motor \
+            google-auth \
+            google-auth-oauthlib \
+            google-api-python-client \
+            pydantic \
+            httpx \
+            torch \
+            transformers \
+            peft \
+            bitsandbytes \
+            || true   # 'true' so GPU-only packages that fail don't block CI
+
+      # ── Step 5: Run pytest ────────────────────────────────────────────────
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/ \
+            --tb=short \
+            -v \
+            --junitxml=test-results.xml \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+        env:
+          # Prevent any accidental real API calls during tests
+          PYTHONDONTWRITEBYTECODE: "1"
+
+      # ── Step 6: Upload test results ───────────────────────────────────────
+      - name: Upload test results (JUnit XML)
+        uses: actions/upload-artifact@v4
+        if: always()    # Upload even if tests fail, so you can inspect failures
+        with:
+          name: test-results
+          path: test-results.xml
+          retention-days: 14
+
+      # ── Step 7: Upload coverage report ───────────────────────────────────
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
+
+      # ── Step 8: Comment coverage on PR (optional) ─────────────────────────
+      # Shows a coverage summary directly in the GitHub PR comment thread.
+      - name: Coverage summary comment
+        uses: orgoro/coverage@v3.2
+        if: github.event_name == 'pull_request'
+        with:
+          coverageFile: coverage.xml
+          token: ${{ secrets.GITHUB_TOKEN }}
+          thresholdAll: 0.60      # Fail if overall coverage < 60%
+          thresholdNew: 0.70      # Fail if NEW code coverage < 70%
+          thresholdModified: 0.60

@@ -1,0 +1,2 @@
+# logs directory — kept in repo so script.groovy's nohup commands have a place to write
+# actual .log files are gitignored
